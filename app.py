@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 from ai_explainer import explain_threat
+import os
 
 # -------------------------------
 # Rule-based reason builder
@@ -21,56 +22,195 @@ def build_reason(row):
         return "unusual traffic behavior"
 
 # -------------------------------
-# Streamlit UI
+# Threat Type Prediction
 # -------------------------------
-st.set_page_config(page_title="Traffic Anomaly AI", layout="wide")
+def predict_threat_type(row):
+    if row["request_count"] > 1300 and row["response_time"] < 20:
+        return "Possible DDoS Attack"
+    elif row["request_count"] > 1000 and row["response_time"] < 30:
+        return "Possible Bot Traffic"
+    elif row["request_count"] > 1000:
+        return "Suspicious Traffic Burst"
+    else:
+        return "Unknown Suspicious Pattern"
 
-st.title("🔐 AI-Powered Traffic Anomaly & Threat Explanation System")
-st.write("Upload a traffic log CSV file to detect suspicious traffic and generate AI-based threat explanations.")
+# -------------------------------
+# Threat Severity
+# -------------------------------
+def assign_severity(row):
+    if row["request_count"] > 1300 and row["response_time"] < 20:
+        return "High"
+    elif row["request_count"] > 1000 and row["response_time"] < 30:
+        return "Medium"
+    else:
+        return "Low"
 
-uploaded_file = st.file_uploader("Upload traffic log CSV", type=["csv"])
+# -------------------------------
+# Executive Summary Generator
+# -------------------------------
+def generate_summary(suspicious_df):
+    if suspicious_df.empty:
+        return "No suspicious traffic was detected in the latest monitoring window."
 
-if uploaded_file is not None:
-    # Load data
-    df = pd.read_csv(uploaded_file)
+    total = len(suspicious_df)
+    threat_types = suspicious_df["threat_type"].value_counts().to_dict()
 
-    st.subheader("📄 Uploaded Traffic Logs")
-    st.dataframe(df)
+    summary = f"{total} suspicious traffic instance(s) were detected. "
 
-    # Select features
-    features = df[["request_count", "response_time"]]
+    if "Possible DDoS Attack" in threat_types:
+        summary += "Potential DDoS-like activity was observed. "
+    if "Possible Bot Traffic" in threat_types:
+        summary += "Some traffic patterns resemble automated bot behavior. "
+    if "Suspicious Traffic Burst" in threat_types:
+        summary += "Burst-like abnormal request activity was also found. "
 
-    # Train Isolation Forest
-    model = IsolationForest(
-        n_estimators=100,
-        contamination=0.2,
-        random_state=42
-    )
+    summary += "Immediate review of flagged IPs is recommended."
+    return summary
 
-    df["anomaly"] = model.fit_predict(features)
+# -------------------------------
+# Streamlit Config
+# -------------------------------
+st.set_page_config(
+    page_title="Traffic Anomaly AI",
+    page_icon="🔐",
+    layout="wide"
+)
 
-    # Convert output
-    df["anomaly_label"] = df["anomaly"].map({
-        1: "Normal",
-        -1: "Suspicious"
-    })
+st.title("🔐 Near Real-Time Traffic Anomaly & Threat Monitoring System")
+st.write("Monitoring simulated live traffic logs using ML-based anomaly detection and AI threat explanations.")
 
-    st.subheader("🚨 Detected Traffic Anomalies")
-    st.dataframe(df[["timestamp", "ip", "request_count", "response_time", "anomaly_label"]])
+st.caption("🔄 Keep refreshing the page every few seconds to see new incoming logs.")
 
-    # Show suspicious traffic only
-    suspicious_df = df[df["anomaly_label"] == "Suspicious"]
+# -------------------------------
+# Load live traffic file
+# -------------------------------
+live_file = "data/traffic_logs_live.csv"
 
-    if not suspicious_df.empty:
-        st.subheader("🧠 AI Threat Explanations")
+if not os.path.exists(live_file):
+    st.warning("⚠️ Live traffic file not found. Please run `python live_log_generator.py` first.")
+    st.stop()
 
-        for _, row in suspicious_df.iterrows():
-            reason = build_reason(row)
-            explanation = explain_threat(row["ip"], reason)
+df = pd.read_csv(live_file)
 
-            st.markdown(f"### IP: {row['ip']}")
+if df.empty:
+    st.warning("⚠️ No live traffic data available yet.")
+    st.stop()
+
+# Only analyze latest 50 rows
+df = df.tail(50)
+
+st.subheader("📄 Latest Incoming Traffic Logs")
+st.dataframe(df, use_container_width=True)
+
+# -------------------------------
+# ML Detection
+# -------------------------------
+features = df[["request_count", "response_time"]]
+
+model = IsolationForest(
+    n_estimators=100,
+    contamination=0.2,
+    random_state=42
+)
+
+df["anomaly"] = model.fit_predict(features)
+
+df["anomaly_label"] = df["anomaly"].map({
+    1: "Normal",
+    -1: "Suspicious"
+})
+
+df["threat_type"] = "None"
+df["severity"] = "None"
+
+suspicious_mask = df["anomaly_label"] == "Suspicious"
+
+df.loc[suspicious_mask, "threat_type"] = df[suspicious_mask].apply(predict_threat_type, axis=1)
+df.loc[suspicious_mask, "severity"] = df[suspicious_mask].apply(assign_severity, axis=1)
+
+# -------------------------------
+# Summary Metrics
+# -------------------------------
+total_logs = len(df)
+suspicious_count = len(df[df["anomaly_label"] == "Suspicious"])
+normal_count = len(df[df["anomaly_label"] == "Normal"])
+
+st.subheader("📊 Monitoring Summary")
+col1, col2, col3 = st.columns(3)
+col1.metric("Latest Logs", total_logs)
+col2.metric("Suspicious Traffic", suspicious_count)
+col3.metric("Normal Traffic", normal_count)
+
+# -------------------------------
+# Alert Banner
+# -------------------------------
+if suspicious_count > 0:
+    st.error(f"🚨 ALERT: {suspicious_count} suspicious traffic event(s) detected in the latest monitoring window!")
+else:
+    st.success("✅ No suspicious traffic currently detected.")
+
+# -------------------------------
+# Filter by IP
+# -------------------------------
+st.subheader("🔎 Filter by IP")
+ip_options = ["All"] + sorted(df["ip"].unique().tolist())
+selected_ip = st.selectbox("Select an IP to inspect", ip_options)
+
+if selected_ip != "All":
+    filtered_df = df[df["ip"] == selected_ip]
+else:
+    filtered_df = df
+
+# -------------------------------
+# Results Table
+# -------------------------------
+st.subheader("🚨 Anomaly Detection Results")
+result_df = filtered_df[[
+    "timestamp", "ip", "request_count", "response_time",
+    "anomaly_label", "threat_type", "severity"
+]]
+st.dataframe(result_df, use_container_width=True)
+
+# -------------------------------
+# Download Report
+# -------------------------------
+csv = result_df.to_csv(index=False).encode("utf-8")
+st.download_button(
+    label="📥 Download Latest Anomaly Report",
+    data=csv,
+    file_name="live_anomaly_report.csv",
+    mime="text/csv"
+)
+
+# -------------------------------
+# Chart
+# -------------------------------
+st.subheader("📈 Request Count Visualization")
+chart_df = filtered_df[["ip", "request_count"]].copy()
+chart_df = chart_df.set_index("ip")
+st.bar_chart(chart_df)
+
+# -------------------------------
+# AI Threat Explanations
+# -------------------------------
+suspicious_df = filtered_df[filtered_df["anomaly_label"] == "Suspicious"]
+
+if not suspicious_df.empty:
+    st.subheader("🧠 AI Threat Explanations")
+
+    for _, row in suspicious_df.iterrows():
+        reason = build_reason(row)
+        explanation = explain_threat(row["ip"], reason)
+
+        with st.expander(f"IP: {row['ip']} | {row['threat_type']} | Severity: {row['severity']}"):
             st.write(f"**Observed Behavior:** {reason}")
             st.write(explanation)
-            st.markdown("---")
-    else:
-        st.success("No suspicious traffic detected.")
+else:
+    st.info("No suspicious traffic to explain right now.")
+
+# -------------------------------
+# Executive Summary
+# -------------------------------
+st.subheader("📝 Executive Summary")
+summary_text = generate_summary(df[df["anomaly_label"] == "Suspicious"])
+st.info(summary_text)
