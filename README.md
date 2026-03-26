@@ -26,7 +26,7 @@ The project is visualized through an interactive **Streamlit dashboard** for mon
 - **phi (Local LLM)**
 
 ## 🏗️ Project Architecture
-
+```text
 Live Traffic Generator
         ↓
 traffic_logs_live.csv
